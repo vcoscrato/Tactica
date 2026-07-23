@@ -158,9 +158,10 @@ jobs:
           set -u
 
           aur_dir="${RUNNER_TEMP}/tactica-bin-aur"
-          GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_aur -o IdentitiesOnly=yes" \
-            git clone --branch master --single-branch \
-            ssh://aur@aur.archlinux.org/tactica-bin.git "${aur_dir}"
+          git clone --branch master --single-branch \
+            https://aur.archlinux.org/tactica-bin.git "${aur_dir}"
+          git -C "${aur_dir}" remote set-url --push origin \
+            ssh://aur@aur.archlinux.org/tactica-bin.git
           chmod 0755 "${aur_dir}"
 
       - name: Render PKGBUILD
@@ -221,5 +222,37 @@ jobs:
           else
             git -C "${aur_dir}" commit -m "Release ${VERSION}"
           fi
-          GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_aur -o IdentitiesOnly=yes" \
-            git -C "${aur_dir}" push origin HEAD:master
+
+          ssh_command="ssh -i ${HOME}/.ssh/id_aur \
+            -o IdentitiesOnly=yes -o ConnectTimeout=30"
+          for attempt in 1 2 3; do
+            if push_output=$(
+              GIT_SSH_COMMAND="${ssh_command}" \
+                git -C "${aur_dir}" push origin HEAD:master 2>&1
+            ); then
+              printf '%s\n' "${push_output}"
+              exit 0
+            fi
+
+            printf '%s\n' "${push_output}" >&2
+            case "${push_output}" in
+              *kex_exchange_identification* | \
+                *"Connection closed"* | \
+                *"Connection reset"* | \
+                *"Connection timed out"* | \
+                *"Connection refused"* | \
+                *"No route to host"*)
+                ;;
+              *)
+                exit 1
+                ;;
+            esac
+
+            if [ "${attempt}" -eq 3 ]; then
+              exit 1
+            fi
+
+            retry_delay=$((attempt * 15))
+            echo "::warning::AUR SSH transport failed (attempt ${attempt}/3); retrying in ${retry_delay}s."
+            sleep "${retry_delay}"
+          done
