@@ -24,7 +24,9 @@ use crate::iced::widgets::sidebar;
 pub struct QuickBoardMode {
     position: Chess,
     pub(crate) board: Board,
+    /// The complete current line, including moves ahead of `current_ply`.
     history: Vec<(Chess, Move)>, // (position_before, move)
+    current_ply: usize,
     es: EngineState,
     pub settings: AppSettings,
     pending_promotion: Option<(Square, Square, Vec<Move>)>,
@@ -71,6 +73,7 @@ impl QuickBoardMode {
                 b
             },
             history: Vec::new(),
+            current_ply: 0,
             es,
             settings,
             pending_promotion: None,
@@ -85,7 +88,9 @@ impl QuickBoardMode {
 
     fn make_move(&mut self, mv: Move, animate: bool) {
         if let Ok(next) = self.position.clone().play(mv) {
+            self.history.truncate(self.current_ply);
             self.history.push((self.position.clone(), mv));
+            self.current_ply += 1;
             self.position = next;
             if animate {
                 self.board.animate_move(&mv, &self.position, false);
@@ -98,23 +103,64 @@ impl QuickBoardMode {
         }
     }
 
-    fn go_back(&mut self) {
-        if let Some((prev_pos, mv)) = self.history.pop() {
-            self.position = prev_pos;
-            self.board.animate_move(&mv, &self.position, true);
-            self.board.deselect();
-            if self.es.analyzing {
-                self.es
-                    .start_with_settings(&self.settings.engine, &self.position);
-            }
+    fn go_back(&mut self) -> bool {
+        let Some(previous_ply) = self.current_ply.checked_sub(1) else {
+            return false;
+        };
+        let (prev_pos, mv) = &self.history[previous_ply];
+        self.position = prev_pos.clone();
+        self.current_ply = previous_ply;
+        self.board.animate_move(mv, &self.position, true);
+        self.board.deselect();
+        if self.es.analyzing {
+            self.es
+                .start_with_settings(&self.settings.engine, &self.position);
         }
+        true
+    }
+
+    fn go_forward(&mut self) -> bool {
+        let Some((_, mv)) = self.history.get(self.current_ply) else {
+            return false;
+        };
+        let mv = *mv;
+        let Ok(next) = self.position.clone().play(mv) else {
+            return false;
+        };
+        self.position = next;
+        self.current_ply += 1;
+        self.board.animate_move(&mv, &self.position, false);
+        self.board.deselect();
+        if self.es.analyzing {
+            self.es
+                .start_with_settings(&self.settings.engine, &self.position);
+        }
+        true
     }
 
     fn go_to_ply(&mut self, ply: usize) {
         let target = ply.min(self.history.len());
-        while self.history.len() > target {
+        while self.current_ply > target {
             self.go_back();
         }
+        while self.current_ply < target {
+            self.go_forward();
+        }
+    }
+
+    fn current_moves(&self) -> Vec<Move> {
+        self.history
+            .iter()
+            .take(self.current_ply)
+            .map(|(_, mv)| *mv)
+            .collect()
+    }
+
+    fn start_position(&self) -> &Chess {
+        self.history
+            .first()
+            .map(|(position, _)| position)
+            .unwrap_or(&self.position)
     }
 }
 
@@ -154,8 +200,12 @@ impl GameMode for QuickBoardMode {
                     self.make_move(mv, true);
                 }
             }
-            QuickBoardMessage::StepBackward => self.go_back(),
-            QuickBoardMessage::StepForward => { /* no forward in quick board */ }
+            QuickBoardMessage::StepBackward => {
+                self.go_back();
+            }
+            QuickBoardMessage::StepForward => {
+                self.go_forward();
+            }
             QuickBoardMessage::GoToPly(ply) => self.go_to_ply(ply),
             QuickBoardMessage::SaveAsStudy(_) => {}
             QuickBoardMessage::ReviewLine(_) => {}
@@ -163,6 +213,7 @@ impl GameMode for QuickBoardMode {
             QuickBoardMessage::ResetBoard => {
                 self.position = Chess::default();
                 self.history.clear();
+                self.current_ply = 0;
                 self.board.deselect();
                 self.board.clear_animation();
                 self.fen_error = None;
@@ -182,6 +233,7 @@ impl GameMode for QuickBoardMode {
                         Ok(position) => {
                             self.position = position;
                             self.history.clear();
+                            self.current_ply = 0;
                             self.board.deselect();
                             self.board.clear_animation();
                             self.fen_error = None;
@@ -212,6 +264,7 @@ impl GameMode for QuickBoardMode {
                             }
                             self.position = pos;
                             self.history = history;
+                            self.current_ply = self.history.len();
                             self.board.deselect();
                             self.board.clear_animation();
                             self.fen_error = warning;
@@ -244,8 +297,14 @@ impl GameMode for QuickBoardMode {
                 if modifiers.control() {
                     return Task::none();
                 }
-                if let keyboard::Key::Named(keyboard::key::Named::ArrowLeft) = key.as_ref() {
-                    self.go_back();
+                match key.as_ref() {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                        self.go_back();
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                        self.go_forward();
+                    }
+                    _ => {}
                 }
             }
             QuickBoardMessage::None => {}
@@ -284,7 +343,10 @@ impl GameMode for QuickBoardMode {
             .board
             .view(
                 &self.position,
-                self.history.last().map(|(_, m)| m),
+                self.current_ply
+                    .checked_sub(1)
+                    .and_then(|ply| self.history.get(ply))
+                    .map(|(_, mv)| mv),
                 None,
                 Length::Fixed(self.settings.board_size),
             )
@@ -303,7 +365,7 @@ impl GameMode for QuickBoardMode {
         .style(|theme, _| iced::widget::svg::Style {
             color: Some(Palette::text_primary(theme)),
         });
-        let review_btn = if self.history.is_empty() {
+        let review_btn = if self.current_ply == 0 {
             button(
                 row![review_icon, text("Review position").size(11.0 * s)]
                     .spacing(6)
@@ -312,7 +374,7 @@ impl GameMode for QuickBoardMode {
             .padding([4, 8])
             .style(buttons::secondary)
         } else {
-            let moves = self.history.iter().map(|(_, mv)| *mv).collect();
+            let moves = self.current_moves();
             button(
                 row![review_icon, text("Review position").size(11.0 * s)]
                     .spacing(6)
@@ -329,7 +391,7 @@ impl GameMode for QuickBoardMode {
             .style(|theme, _| iced::widget::svg::Style {
                 color: Some(Palette::text_primary(theme)),
             });
-        let study_btn = if self.history.is_empty() {
+        let study_btn = if self.current_ply == 0 {
             button(
                 row![study_icon, text("Study position").size(11.0 * s)]
                     .spacing(6)
@@ -338,7 +400,7 @@ impl GameMode for QuickBoardMode {
             .padding([4, 8])
             .style(buttons::secondary)
         } else {
-            let moves = self.history.iter().map(|(_, mv)| *mv).collect();
+            let moves = self.current_moves();
             button(
                 row![study_icon, text("Study position").size(11.0 * s)]
                     .spacing(6)
@@ -381,10 +443,11 @@ impl GameMode for QuickBoardMode {
         };
 
         let moves: Vec<Move> = self.history.iter().map(|(_, mv)| *mv).collect();
-        let ribbon = move_ribbon::build_linear_ribbon(
+        let ribbon = move_ribbon::build_linear_ribbon_with_start(
             theme,
             &moves,
-            self.history.len(),
+            self.start_position(),
+            self.current_ply,
             QuickBoardMessage::GoToPly,
             |_| QuickBoardMessage::None,
         );
@@ -449,20 +512,11 @@ impl GameMode for QuickBoardMode {
     }
 
     fn navigate_home(&mut self) {
-        while !self.history.is_empty() {
-            self.history.pop();
-        }
-        self.position = Chess::default();
-        self.board.deselect();
-        self.board.clear_animation();
-        if self.es.analyzing {
-            self.es
-                .start_with_settings(&self.settings.engine, &self.position);
-        }
+        self.go_to_ply(0);
     }
 
     fn navigate_end(&mut self) {
-        // No-op for quick board
+        self.go_to_ply(self.history.len());
     }
 
     fn instructions(&self) -> String {
@@ -474,6 +528,82 @@ impl GameMode for QuickBoardMode {
     }
 
     fn active_hotkeys(&self) -> Vec<(String, String)> {
-        vec![("Left".to_string(), "Take back move".to_string())]
+        vec![
+            ("Left".to_string(), "Previous move".to_string()),
+            ("Right".to_string(), "Next move".to_string()),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shakmaty::san::San;
+
+    fn mode_from(position: Chess) -> QuickBoardMode {
+        let mut settings = AppSettings::default();
+        settings.engine.enabled = false;
+        QuickBoardMode::from_position(position, settings)
+    }
+
+    fn play_san(mode: &mut QuickBoardMode, san: &str) -> Move {
+        let san: San = san.parse().expect("valid SAN");
+        let mv = san.to_move(&mode.position).expect("legal move");
+        mode.make_move(mv, false);
+        mv
+    }
+
+    #[test]
+    fn backward_and_forward_navigation_preserve_the_line() {
+        let mut mode = mode_from(Chess::default());
+        play_san(&mut mode, "e4");
+        play_san(&mut mode, "e5");
+        play_san(&mut mode, "Nf3");
+        let final_position = mode.position.clone();
+
+        assert!(mode.go_back());
+        assert!(mode.go_back());
+        assert_eq!(mode.current_ply, 1);
+        assert_eq!(mode.history.len(), 3);
+
+        assert!(mode.go_forward());
+        assert!(mode.go_forward());
+        assert_eq!(mode.current_ply, 3);
+        assert_eq!(mode.position, final_position);
+        assert!(!mode.go_forward());
+    }
+
+    #[test]
+    fn making_a_move_after_stepping_back_replaces_the_future() {
+        let mut mode = mode_from(Chess::default());
+        play_san(&mut mode, "e4");
+        play_san(&mut mode, "e5");
+        let old_future = play_san(&mut mode, "Nf3");
+
+        assert!(mode.go_back());
+        let replacement = play_san(&mut mode, "Nc3");
+
+        assert_eq!(mode.current_ply, 3);
+        assert_eq!(mode.history.len(), 3);
+        assert_eq!(mode.history[2].1, replacement);
+        assert_ne!(mode.history[2].1, old_future);
+    }
+
+    #[test]
+    fn home_and_end_preserve_a_custom_starting_position() {
+        let custom_start = pgn::parse_fen("8/8/8/8/8/8/4K3/6k1 w - - 0 1").expect("valid FEN");
+        let mut mode = mode_from(custom_start.clone());
+        play_san(&mut mode, "Kf3");
+        play_san(&mut mode, "Kh2");
+        let final_position = mode.position.clone();
+
+        mode.navigate_home();
+        assert_eq!(mode.current_ply, 0);
+        assert_eq!(mode.position, custom_start);
+        assert_eq!(mode.history.len(), 2);
+
+        mode.navigate_end();
+        assert_eq!(mode.current_ply, 2);
+        assert_eq!(mode.position, final_position);
     }
 }
