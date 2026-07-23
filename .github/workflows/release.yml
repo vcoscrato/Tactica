@@ -128,9 +128,29 @@ jobs:
           fi
 
           install -d -m 0700 "${HOME}/.ssh"
-          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > "${HOME}/.ssh/id_aur"
-          chmod 0600 "${HOME}/.ssh/id_aur"
-          ssh-keygen -y -f "${HOME}/.ssh/id_aur" > /dev/null
+          key_file="${HOME}/.ssh/id_aur"
+          key_value=${AUR_SSH_PRIVATE_KEY//$'\r'/}
+
+          printf '%s\n' "${key_value}" > "${key_file}"
+          chmod 0600 "${key_file}"
+
+          if ! ssh-keygen -y -f "${key_file}" > /dev/null 2>&1; then
+            printf '%b\n' "${key_value}" > "${key_file}"
+          fi
+
+          if ! ssh-keygen -y -f "${key_file}" > /dev/null 2>&1; then
+            decoded_key="${RUNNER_TEMP}/aur_key_decoded"
+            if printf '%s' "${key_value}" |
+              base64 --decode > "${decoded_key}" 2>/dev/null; then
+              install -m 0600 "${decoded_key}" "${key_file}"
+            fi
+          fi
+
+          if ! ssh-keygen -y -f "${key_file}" > /dev/null 2>&1; then
+            echo "::error::AUR_SSH_PRIVATE_KEY is not a valid raw, escaped-newline, or base64-encoded private key."
+            exit 1
+          fi
+
           ssh-keyscan -H aur.archlinux.org >> "${HOME}/.ssh/known_hosts"
 
       - name: Clone AUR repository

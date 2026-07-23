@@ -20,11 +20,20 @@ it does not publish to GitHub Releases or the AUR.
 ### One-Time Setup for GitHub Secrets
 
 1. Copy the public SSH key `~/.ssh/aur_key.pub` and add it to your [AUR Account Settings](https://aur.archlinux.org/account/).
-2. Copy the private SSH key `~/.ssh/aur_key` and add it as a repository secret named `AUR_SSH_PRIVATE_KEY` on GitHub:
+2. Base64-encode the private key as one line:
+
+   ```bash
+   base64 -w0 ~/.ssh/aur_key
+   ```
+
+3. Add that one-line value as a repository secret named
+   `AUR_SSH_PRIVATE_KEY` on GitHub:
    `https://github.com/vcoscrato/Tactica/settings/secrets/actions`
 
-The release workflow fails explicitly if this secret is missing, so a green
-release run means that the AUR update was pushed successfully.
+The workflow also accepts a correctly preserved multiline key or a key stored
+with literal `\n` separators, but one-line base64 avoids newline corruption.
+The release workflow fails explicitly if the secret is missing or invalid, so
+a green release run means that the AUR update was pushed successfully.
 
 ### Triggering a Release
 
