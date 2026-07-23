@@ -1,0 +1,25 @@
+[package]
+name = "tactica"
+version = "0.0.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/vcoscrato/Tactica"
+publish = false
+
+[dependencies]
+iced = { version = "0.14", features = ["canvas", "tokio", "image", "svg"] }
+shakmaty = "0.30.1"
+vampirc-uci = "0.11.1"
+resvg = "0.47"
+dirs = "6.0"
+rfd = "0.17.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# PGN parsing
+pgn-reader = "0.29"
+
+fastrand = "2.4.1"
+
+[profile.release]
+strip = "symbols"

@@ -1,0 +1,143 @@
+name: Release and Publish AUR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            desktop-file-utils \
+            pkg-config \
+            pacman-package-manager
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download Stockfish engine
+        run: ./download-stockfish.sh
+
+      - name: Test and build release
+        run: |
+          cargo test --locked
+          cargo build --release --locked
+
+      - name: Create release bundle
+        id: bundle
+        run: |
+          REV_COUNT=$(git rev-list --count HEAD)
+          SHORT_HASH=$(git rev-parse --short HEAD)
+          VERSION="r${REV_COUNT}.${SHORT_HASH}"
+
+          DIST_DIR="target/dist"
+          mkdir -p "${DIST_DIR}"
+
+          # Copy files into dist
+          cp target/release/tactica "${DIST_DIR}/tactica-linux-x86_64"
+          cp packaging/linux/tactica.desktop "${DIST_DIR}/tactica.desktop"
+          cp assets/tactica.svg "${DIST_DIR}/tactica.svg"
+          cp LICENSE "${DIST_DIR}/LICENSE"
+          if [ -d legal ]; then
+            cp -r legal "${DIST_DIR}/legal"
+          fi
+
+          # Create release tarball
+          TARBALL_NAME="tactica-${VERSION}-x86_64.tar.gz"
+          tar -czf "${TARBALL_NAME}" -C "${DIST_DIR}" .
+          SHA256=$(sha256sum "${TARBALL_NAME}" | cut -d' ' -f1)
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tarball=${TARBALL_NAME}" >> $GITHUB_OUTPUT
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bundle.outputs.version }}
+          name: Release ${{ steps.bundle.outputs.version }}
+          files: ${{ steps.bundle.outputs.tarball }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to AUR (tactica-bin)
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ steps.bundle.outputs.version }}
+          SHA256: ${{ steps.bundle.outputs.sha256 }}
+        run: |
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ]; then
+            echo "Skipping AUR publish: AUR_SSH_PRIVATE_KEY secret is not set."
+            exit 0
+          fi
+
+          mkdir -p ~/.ssh
+          echo "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/id_aur
+          chmod 600 ~/.ssh/id_aur
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_aur" git clone ssh://aur@aur.archlinux.org/tactica-bin.git aur-repo
+          cd aur-repo
+          git checkout master || git checkout -b master
+
+          cat <<'EOF' > PKGBUILD
+# Maintainer: Victor Coscrato <vcoscrato@gmail.com>
+pkgname=tactica-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Desktop chess trainer built with Rust and Iced (prebuilt binary)"
+arch=('x86_64')
+url="https://github.com/vcoscrato/Tactica"
+license=('GPL-3.0-or-later')
+depends=('gcc-libs' 'glibc')
+provides=('tactica')
+conflicts=('tactica')
+source=(
+  "$pkgname-$pkgver.tar.gz::$url/releases/download/${pkgver}/tactica-${pkgver}-x86_64.tar.gz"
+)
+sha256sums=(
+  '__SHA256__'
+)
+
+package() {
+  install -Dm0755 tactica-linux-x86_64 "$pkgdir/usr/bin/tactica"
+  install -Dm0644 tactica.desktop "$pkgdir/usr/share/applications/tactica.desktop"
+  install -Dm0644 tactica.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/tactica.svg"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  if [ -d legal ]; then
+    install -Dm0644 legal/* "$pkgdir/usr/share/licenses/$pkgname/" 2>/dev/null || true
+  fi
+}
+EOF
+
+          sed -i "s/__VERSION__/${VERSION}/g" PKGBUILD
+          sed -i "s/__SHA256__/${SHA256}/g" PKGBUILD
+
+          # Generate .SRCINFO
+          docker run --rm -v "$(pwd):/pkg" -w /pkg archlinux:latest sh -c "pacman -Sy --noconfirm pacman-contrib base-devel && makepkg --printsrcinfo > .SRCINFO" || true
+
+          git add PKGBUILD .SRCINFO
+          git commit -m "Release ${VERSION}" || true
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_aur" git push origin master

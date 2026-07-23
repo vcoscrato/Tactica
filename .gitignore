@@ -1,0 +1,13 @@
+/target
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+
+.agents/
+.codex/
+
+# Binary assets (too large for git)
+# Stockfish binary should be downloaded separately
+assets/stockfish

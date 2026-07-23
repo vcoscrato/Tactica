@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Tactica
+GenericName=Chess Trainer
+Comment=Practice chess openings and review games
+Exec=tactica
+TryExec=tactica
+Icon=tactica
+Terminal=false
+Categories=Game;BoardGame;
+Keywords=Chess;Training;Openings;Tactics;PGN;
+StartupNotify=true
+StartupWMClass=tactica

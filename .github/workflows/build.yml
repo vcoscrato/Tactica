@@ -1,0 +1,78 @@
+name: Build main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-main
+  cancel-in-progress: true
+
+jobs:
+  build-linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            desktop-file-utils \
+            pkg-config
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download embedded Stockfish
+        run: ./download-stockfish.sh
+
+      - name: Test and compile
+        run: |
+          test -x assets/stockfish
+          desktop-file-validate packaging/linux/tactica.desktop
+          cargo test --locked
+          cargo build --release --locked
+
+      - name: Install dependency license generator
+        run: cargo install --locked --version 0.9.1 --features cli cargo-about
+
+      - name: Package build
+        run: |
+          package_dir="target/dist"
+          install -d "${package_dir}"
+          cargo about generate --locked --fail \
+            --config legal/cargo-about.toml \
+            --output-file "${package_dir}/RUST_DEPENDENCY_LICENSES.html" \
+            legal/cargo-about.hbs
+          install -m 0755 target/release/tactica \
+            "${package_dir}/tactica-linux-x86_64"
+          install -m 0644 \
+            LICENSE \
+            legal/THIRD_PARTY_NOTICES.md \
+            legal/ASSET_LICENSES.md \
+            "${package_dir}/"
+          install -m 0644 packaging/linux/tactica.desktop \
+            "${package_dir}/tactica.desktop"
+          install -m 0644 assets/tactica.svg \
+            "${package_dir}/tactica.svg"
+          cd "${package_dir}"
+          sha256sum tactica-linux-x86_64 \
+            > tactica-linux-x86_64.sha256
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: tactica-linux-x86_64
+          path: target/dist/
+          if-no-files-found: error
