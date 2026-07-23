@@ -10,9 +10,11 @@ Release, verifies the published asset, and updates `tactica-bin` on the AUR
 whenever `main` is updated. Rolling versions use the format
 `r<commit-count>.<short-hash>`.
 
-The package uses `epoch=1` because the repository history previously reset the
-rolling version from `r6` to `r1`. The epoch ensures that existing `r6`
-installations still upgrade to the current release.
+The package intentionally omits an epoch so the displayed package version is
+only `r<commit-count>.<short-hash>-<pkgrel>`.
+
+Users who installed an earlier `epoch=1` build need a one-time explicit
+reinstall or downgrade. Subsequent VCS revisions compare normally.
 
 The separate `Build main` workflow only tests and uploads a workflow artifact;
 it does not publish to GitHub Releases or the AUR.

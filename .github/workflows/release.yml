@@ -203,7 +203,10 @@ jobs:
             makepkg --printsrcinfo > "${aur_dir}/.SRCINFO"
           test -s "${aur_dir}/.SRCINFO"
           grep -Fqx $'\tpkgver = '"${VERSION}" "${aur_dir}/.SRCINFO"
-          grep -Fqx $'\tepoch = 1' "${aur_dir}/.SRCINFO"
+          if grep -Fq $'\tepoch = ' "${aur_dir}/.SRCINFO"; then
+            echo "::error::AUR package version must not use an epoch."
+            exit 1
+          fi
           grep -Fqx $'\tsha256sums = '"${SHA256}" "${aur_dir}/.SRCINFO"
 
       - name: Commit and push AUR update

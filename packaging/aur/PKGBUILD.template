@@ -1,7 +1,5 @@
 # Maintainer: Victor Coscrato <vcoscrato@gmail.com>
 pkgname=tactica-bin
-# Do not remove: the rolling version previously reset from r6 to r1.
-epoch=1
 pkgver=__VERSION__
 pkgrel=1
 pkgdesc="Desktop chess trainer built with Rust and Iced (prebuilt binary)"
