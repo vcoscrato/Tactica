@@ -18,10 +18,13 @@ jobs:
     name: Build & Release
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.bundle.outputs.version }}
+      sha256: ${{ steps.bundle.outputs.sha256 }}
 
     steps:
       - name: Check out repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -79,7 +82,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.bundle.outputs.version }}
           name: Release ${{ steps.bundle.outputs.version }}
@@ -101,11 +104,21 @@ jobs:
             --output "${asset_path}" "${asset_url}"
           printf '%s  %s\n' "${SHA256}" "${asset_path}" | sha256sum --check
 
-      - name: Publish to AUR (tactica-bin)
+  publish-aur:
+    name: Publish AUR
+    needs: release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out package template
+        uses: actions/checkout@v7
+
+      - name: Configure AUR SSH key
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          VERSION: ${{ steps.bundle.outputs.version }}
-          SHA256: ${{ steps.bundle.outputs.sha256 }}
         run: |
           set -u
 
@@ -117,17 +130,27 @@ jobs:
           install -d -m 0700 "${HOME}/.ssh"
           printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > "${HOME}/.ssh/id_aur"
           chmod 0600 "${HOME}/.ssh/id_aur"
+          ssh-keygen -y -f "${HOME}/.ssh/id_aur" > /dev/null
           ssh-keyscan -H aur.archlinux.org >> "${HOME}/.ssh/known_hosts"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Clone AUR repository
+        run: |
+          set -u
 
-          export GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_aur -o IdentitiesOnly=yes"
           aur_dir="${RUNNER_TEMP}/tactica-bin-aur"
-          git clone --branch master --single-branch \
+          GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_aur -o IdentitiesOnly=yes" \
+            git clone --branch master --single-branch \
             ssh://aur@aur.archlinux.org/tactica-bin.git "${aur_dir}"
           chmod 0755 "${aur_dir}"
 
+      - name: Render PKGBUILD
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+        run: |
+          set -u
+
+          aur_dir="${RUNNER_TEMP}/tactica-bin-aur"
           install -m 0644 packaging/aur/PKGBUILD.template \
             "${aur_dir}/PKGBUILD"
           sed -i "s/__VERSION__/${VERSION}/g" "${aur_dir}/PKGBUILD"
@@ -137,6 +160,14 @@ jobs:
             exit 1
           fi
 
+      - name: Generate and validate .SRCINFO
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+        run: |
+          set -u
+
+          aur_dir="${RUNNER_TEMP}/tactica-bin-aur"
           docker run --rm \
             --user 65534:65534 \
             --env HOME=/tmp \
@@ -154,10 +185,21 @@ jobs:
           grep -Fqx $'\tepoch = 1' "${aur_dir}/.SRCINFO"
           grep -Fqx $'\tsha256sums = '"${SHA256}" "${aur_dir}/.SRCINFO"
 
+      - name: Commit and push AUR update
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -u
+
+          aur_dir="${RUNNER_TEMP}/tactica-bin-aur"
+          git -C "${aur_dir}" config user.name "github-actions[bot]"
+          git -C "${aur_dir}" config user.email \
+            "github-actions[bot]@users.noreply.github.com"
           git -C "${aur_dir}" add PKGBUILD .SRCINFO
           if git -C "${aur_dir}" diff --cached --quiet; then
             echo "AUR already contains ${VERSION}."
           else
             git -C "${aur_dir}" commit -m "Release ${VERSION}"
           fi
-          git -C "${aur_dir}" push origin HEAD:master
+          GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_aur -o IdentitiesOnly=yes" \
+            git -C "${aur_dir}" push origin HEAD:master
